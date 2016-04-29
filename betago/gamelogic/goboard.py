@@ -24,12 +24,30 @@ class GoBoard(object):
         self.board_size = board_size
         self.board = {}
         self.go_strings = {}
+        self.past_states = set()
+
+    def __deepcopy__(self, memodict={}):
+        copied = GoBoard(self.board_size)
+        copied.ko_last_move_num_captured = self.ko_last_move_num_captured
+        copied.ko_last_move = self.ko_last_move
+        # No deepcopy necessary, cause board is a dict of tuples
+        # (immutable) to strings (also immutable)
+        copied.board = dict(self.board)
+        # Copy the go strings. Several points can reference the exact
+        # same GoString object, so make sure to copy each just once.
+        for k, v in self.go_strings.items():
+            if k not in copied.go_strings:
+                copied_string = copy.deepcopy(v)
+                for point in copied_string.stones:
+                    copied.go_strings[point] = copied_string
+        copied.past_states = set(self.past_states)
+        return copied
 
     def fold_go_strings(self, target, source, join_position):
         ''' Merge two go strings by joining their common moves'''
         if target == source:
             return
-        for stone_position in source.stones.stones:
+        for stone_position in source.stones:
             self.go_strings[stone_position] = target
             target.insert_stone(stone_position)
         target.copy_liberties_from(source)
@@ -48,19 +66,22 @@ class GoBoard(object):
     def is_move_on_board(self, move):
         return move in self.board
 
-    def is_move_suicide(self, color, pos):
-        '''Check if a proposed move would be suicide.'''
-        # Make a copy of ourself to apply the move.
-        temp_board = copy.deepcopy(self)
-        temp_board.apply_move(color, pos)
-        new_string = temp_board.go_strings[pos]
-        return new_string.get_num_liberties() == 0
-
     def is_move_legal(self, color, pos):
         '''Check if a proposed moved is legal.'''
-        return (not self.is_move_on_board(pos)) and \
-            (not self.is_move_suicide(color, pos)) and \
-            (not self.is_simple_ko(color, pos))
+        if self.is_move_on_board(pos):
+            return False
+        # Apply the move on a copy.
+        temp_board = copy.deepcopy(self)
+        temp_board.apply_move(color, pos)
+        # Check for suicide.
+        new_string = temp_board.go_strings[pos]
+        if new_string.get_num_liberties() == 0:
+            return False
+        # Check for superko.
+        if temp_board.signature() in self.past_states:
+            return False
+        # Move is ok.
+        return True
 
     def create_go_string(self, color, pos):
         ''' Create GoString from current Board and move '''
@@ -136,7 +157,7 @@ class GoBoard(object):
         # Update adjacent liberties on board
         enemy_string.remove_liberty(our_pos)
         if enemy_string.get_num_liberties() == 0:
-            for enemy_pos in enemy_string.stones.stones:
+            for enemy_pos in enemy_string.stones:
                 string_row, string_col = enemy_pos
                 del self.board[enemy_pos]
                 del self.go_strings[enemy_pos]
@@ -144,6 +165,10 @@ class GoBoard(object):
                 for adjstring in [(string_row-1, string_col), (string_row+1, string_col),
                                   (string_row, string_col-1), (string_row, string_col+1)]:
                     self.add_liberty_to_adjacent_string(adjstring, enemy_pos, play_color)
+
+    def signature(self):
+        '''Compute a (probably) unique identifier for this board state.'''
+        return hash(frozenset(self.board.items()))
 
     def apply_move(self, play_color, pos):
         '''
@@ -155,6 +180,9 @@ class GoBoard(object):
         '''
         if pos in self.board:
             raise ValueError('Move ' + str(pos) + 'is already on board.')
+
+        # Store current state for superko.
+        self.past_states.add(self.signature())
 
         self.ko_last_move_num_captured = 0
         row, col = pos
@@ -209,44 +237,22 @@ class GoBoard(object):
         return result
 
 
-class BoardSequence(object):
+class BoardSequence(set):
     '''
     Store a sequence of locations on a board, which could either represent stones or liberties.
     '''
-    def __init__(self, board_size=19):
-        self.board_size = board_size
-        self.stones = []
-        self.board = {}
-
     def insert(self, combo):
-        row, col = combo
-        if combo in self.board:
-            return
-        self.stones.append(combo)
-        self.board[combo] = len(self.stones) - 1
+        self.add(combo)
 
     def erase(self, combo):
-        if combo not in self.board:
-            return
-        iid = self.board[combo]
-        if iid == len(self.stones) - 1:
-            del self.stones[iid]
-            del self.board[combo]
-            return
-        self.stones[iid] = self.stones[len(self.stones) - 1]
-        del self.stones[len(self.stones) - 1]
-        movedcombo = self.stones[iid]
-        self.board[movedcombo] = iid
-        del self.board[combo]
+        if combo in self:
+            self.remove(combo)
 
     def exists(self, combo):
-        return combo in self.board
+        return combo in self
 
     def size(self):
-        return len(self.stones)
-
-    def __getitem__(self, iid):
-        return self.stones[iid]
+        return len(self)
 
     def __str__(self):
         result = 'BoardSequence\n'
@@ -268,8 +274,14 @@ class GoString(object):
     def __init__(self, board_size, color):
         self.board_size = board_size
         self.color = color
-        self.liberties = BoardSequence(board_size)
-        self.stones = BoardSequence(board_size)
+        self.liberties = BoardSequence()
+        self.stones = BoardSequence()
+
+    def __deepcopy__(self, memodict={}):
+        copied = GoString(self.board_size, self.color)
+        copied.liberties = BoardSequence(self.liberties)
+        copied.stones = BoardSequence(self.stones)
+        return copied
 
     def get_stone(self, index):
         return self.stones[index]
@@ -293,7 +305,7 @@ class GoString(object):
         self.liberties.insert(combo)
 
     def copy_liberties_from(self, source):
-        for libertyPos in source.liberties.stones:
+        for libertyPos in source.liberties:
             self.liberties.insert(libertyPos)
 
     def __str__(self):

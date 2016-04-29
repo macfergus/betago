@@ -27,6 +27,7 @@ class GTPFrontend(object):
         self._input = sys.stdin
         self._output = sys.stdout
         self._stopped = False
+        self._will_pass = False
 
     def run(self):
         while not self._stopped:
@@ -66,11 +67,15 @@ class GTPFrontend(object):
 
     def handle_play(self, player, move):
         color = 'b' if player == 'black' else 'w'
+        if move == 'pass':
+            self._will_pass = True
         if move != 'pass':
             self.bot.apply_move(color, gtp_position_to_coords(move))
         return response.success()
 
     def handle_genmove(self, player):
+        if self._will_pass:
+            return response.success('pass')
         bot_color = 'b' if player == 'black' else 'w'
         move = self.bot.select_move(bot_color)
         if move is None:
