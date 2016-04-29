@@ -78,6 +78,30 @@ class GoBoardTest(unittest.TestCase):
         # But white can.
         self.assertTrue(board.is_move_legal('w', (5, 5)))
 
+    def test_is_move_legal_superko(self):
+        board = from_string('''
+            .bw.wbw..
+            .bwwbbw..
+            .bw.wbw..
+            .bwwbbw..
+            .bwb.bw..
+            .bwwbbw..
+            .bbbwww..
+            .........
+            .........
+        ''')
+
+        # Make all three captures, twice.
+        board.apply_move('b', (8, 3))
+        board.apply_move('w', (4, 4))
+        board.apply_move('b', (6, 3))
+        board.apply_move('w', (8, 4))
+        board.apply_move('b', (4, 3))
+        board.apply_move('w', (6, 4))
+
+        # Can't recapture because of superko.
+        self.assertFalse(board.is_move_legal('b', (8, 3)))
+
     def test_from_string(self):
         board = from_string('''
             .b...
