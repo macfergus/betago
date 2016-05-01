@@ -1,4 +1,5 @@
 import copy
+import math
 import random
 import time
 
@@ -10,6 +11,15 @@ from ..dataloader.goboard import GoBoard, to_string
 __all__ = [
     'MCTSBot',
 ]
+
+
+def path(node):
+    path = []
+    while node is not None:
+        path.append(node.last_move)
+        node = node.parent
+    path.reverse()
+    return path
 
 
 class GameNode(object):
@@ -79,7 +89,18 @@ class TreePolicy(object):
         -------
         GameNode
         """
-        return random.choice(node.children)
+        total_visits = sum(child.num_visits() for child in node.children)
+        log_visits = math.log(total_visits)
+        temperature = 1.4
+        def ucb1(child):
+            expectation = child.win_percentage(node.next_to_play)
+            exploration = math.sqrt(log_visits / node.num_visits())
+            return expectation + 1.4 * temperature
+        scored_children = [(ucb1(child), child) for child in node.children]
+        scored_children.sort()
+        selected_child = scored_children[-1][1]
+        #print "Select", path(selected_child), "win", selected_child.win_percentage(node.next_to_play), "metric", scored_children[-1][0]
+        return scored_children[-1][1]
 
 
 def _other(player):
@@ -140,21 +161,34 @@ class MCTSBot(object):
         self.num_planes = processor.num_planes
         self.komi = 7.5
         self.top_n = 10
-        self.thinking_time = 20.0  # seconds
+        self.thinking_time = 90.0  # seconds
         self.policy = TreePolicy()
+        self.root = None
 
     def set_board(self, new_board):
         self.go_board = copy.deepcopy(new_board)
 
     def apply_move(self, color, move):
         self.go_board.apply_move(color, move)
+        # If this was a move we considered, preserve the tree.
+        found_move = False
+        for child in self.root.children:
+            if child.last_move == move:
+                self.root = child
+                self.root.parent = None
+                found_move = True
+                #print "Found it in our tree"
+                break
+        if not found_move:
+            self.root = None
 
     def select_move(self, bot_color):
-        root = GameNode(self.go_board, bot_color, self.playout_model, self.processor)
+        if self.root is None:
+            self.root = GameNode(self.go_board, bot_color, self.playout_model, self.processor)
         start = time.time()
 
         while time.time() - start < self.thinking_time:
-            node = root
+            node = self.root
             # Find a node that can be expanded.
             while node.is_expanded():
                 node = self.policy.select_child(node)
@@ -162,9 +196,12 @@ class MCTSBot(object):
             # Expand this node, if possible.
             if not node.is_expanded():
                 node = node.add_child()
+            #print "Selected %s" % path(node)
 
             # Simulate a random game from this node.
+            #print "Simulate random game..."
             winner = self.do_random_playout(node.board, node.next_to_play)
+            #print "Winner was", winner
 
             # Propagate scores back up the tree.
             while node is not None:
@@ -173,15 +210,20 @@ class MCTSBot(object):
 
         # Select the best move.
         ranked_children = sorted(
-            root.children,
-            key=lambda node: (node.win_percentage(bot_color), node.num_visits()))
+            self.root.children,
+            key=lambda node: (node.num_visits(), node.win_percentage(bot_color)))
         self.go_board.apply_move(bot_color, ranked_children[0].last_move)
-        return ranked_children[0].last_move
+        # Make the selected child the new root.
+        self.root = ranked_children[0]
+        self.root.parent = None
+        return self.root.last_move
 
     def do_random_playout(self, board, next_to_play):
         board = copy.deepcopy(board)
         passes = 0
         while not _game_over(board):
+            if passes >= 2:
+                break
             X, _ = self.processor.feature_and_label(next_to_play, (0, 0), board, self.num_planes)
             X = X.reshape((1, X.shape[0], X.shape[1], X.shape[2]))
             pred = np.squeeze(self.playout_model.predict(X))
@@ -190,14 +232,11 @@ class MCTSBot(object):
             mask = np.zeros(pred.shape)
             mask[top_idx] = 1
             pred *= mask
-            #if pred.sum() < 1e-6:
-            #    print "No predictions!"
-            #    print to_string(board)
-            pred /= pred.sum()
-            moves = np.random.choice(19 * 19, size=self.top_n, replace=False, p=pred)
-            #s = ' '.join(['(%d, %d @ %.5f)' % (mov // 19, mov % 19, pred[mov]) for mov in moves])
-            passes += 1
             did_move = False
+            num_moves = max(self.top_n, np.count_nonzero(pred))
+            pred /= pred.sum()
+            moves = np.random.choice(19 * 19, size=num_moves, replace=False, p=pred)
+            #s = ' '.join(['(%d, %d @ %.5f)' % (mov // 19, mov % 19, pred[mov]) for mov in moves])
             for i, move_number in enumerate(moves):
                 row = move_number // 19
                 col = move_number % 19
@@ -205,7 +244,6 @@ class MCTSBot(object):
                 if board.is_move_legal(next_to_play, move):
                     board.apply_move(next_to_play, move)
                     did_move = True
-                    passes = 0
                     break
             if not did_move:
                 bp, diag = border_moves(board, next_to_play)
@@ -221,6 +259,10 @@ class MCTSBot(object):
                         board.apply_move(next_to_play, move)
                         did_move = True
                         break
+            if did_move:
+                passes = 0
+            else:
+                passes += 1
             next_to_play = _other(next_to_play)
         status = scoring.evaluate_territory(board)
         black_area = status.num_black_territory + status.num_black_stones
