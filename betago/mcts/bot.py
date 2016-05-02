@@ -1,16 +1,35 @@
 import copy
 import math
+import multiprocessing
 import random
 import time
+import yaml
 
 import numpy as np
 
+from keras.models import model_from_yaml
 from .. import scoring
+from ..bots.playout import PlayoutBot
 from ..dataloader.goboard import GoBoard, to_string
+from ..processor import SevenPlaneProcessor
 
 __all__ = [
     'MCTSBot',
 ]
+
+
+def init_worker():
+    processor = SevenPlaneProcessor()
+    playout_bot_name = 'cum_a'
+    playout_model_file = 'model_zoo/' + playout_bot_name + '_bot.yml'
+    playout_weight_file = 'model_zoo/' + playout_bot_name + '_weights.hd5'
+    with open(playout_model_file, 'r') as f:
+        yml = yaml.load(f)
+        playout_model = model_from_yaml(yaml.dump(yml))
+        playout_model.compile(loss='categorical_crossentropy', optimizer='adadelta', metrics=['accuracy'])
+        playout_model.load_weights(playout_weight_file)
+    global playout_bot
+    playout_bot = PlayoutBot(playout_model, processor)
 
 
 def path(node):
@@ -54,14 +73,13 @@ class GameNode(object):
         move_to_add = self._unvisited_moves.pop(0)
         new_board = copy.deepcopy(self.board)
         new_board.apply_move(self.next_to_play, move_to_add)
-        child = GameNode(new_board, _other(self.next_to_play), self.model, self.processor)
+        child = GameNode(
+            new_board, new_board.other_color(self.next_to_play),
+            self.model, self.processor)
         child.last_move = move_to_add
         child.parent = self
         self.children.append(child)
         return child
-
-    def is_leaf(self):
-        return not self.children
 
     def record_win(self, player):
         self.stats[player] += 1
@@ -103,60 +121,17 @@ class TreePolicy(object):
         return scored_children[-1][1]
 
 
-def _other(player):
-    return 'w' if player == 'b' else 'b'
-
-
 def _game_over(board):
     status = scoring.evaluate_territory(board)
     return (status.num_black_stones + status.num_white_stones > 10) and status.num_dame == 0
 
 
-def border_moves(board, next_to_play):
-    border_points = []
-    diagonal_points = []
-    for row in range(19):
-        for col in range(19):
-            move = (row, col)
-            if move not in board.board:
-                my_neighbors = 0
-                other_neighbors = 0
-                my_diag, other_diag = 0, 0
-                deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-                for delta_r, delta_c in deltas:
-                    next_r, next_c = row + delta_r, col + delta_c
-                    if next_r < 0 or next_r >= board.board_size:
-                        continue
-                    if next_c < 0 or next_c >= board.board_size:
-                        continue
-                    neighbor = board.board.get((next_r, next_c))
-                    if neighbor == next_to_play:
-                        my_neighbors += 1
-                    elif neighbor:
-                        other_neighbors += 1
-                deltas = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
-                for delta_r, delta_c in deltas:
-                    next_r, next_c = row + delta_r, col + delta_c
-                    if next_r < 0 or next_r >= board.board_size:
-                        continue
-                    if next_c < 0 or next_c >= board.board_size:
-                        continue
-                    neighbor = board.board.get((next_r, next_c))
-                    if neighbor == next_to_play:
-                        my_diag += 1
-                    elif neighbor:
-                        other_diag += 1
-                if my_neighbors and other_neighbors:
-                    border_points.append(move)
-                elif other_neighbors and my_diag:
-                    diagonal_points.append(move)
-    return border_points, diagonal_points
-
-
 class MCTSBot(object):
-    def __init__(self, playout_model, processor):
+    def __init__(self, model, processor, playout_bot):
         self.go_board = GoBoard(19)
-        self.playout_model = playout_model
+        self.model = model
+        self.processor = processor
+        self.playout_bot = playout_bot
         self.processor = processor
         self.num_planes = processor.num_planes
         self.komi = 7.5
@@ -164,9 +139,13 @@ class MCTSBot(object):
         self.thinking_time = 90.0  # seconds
         self.policy = TreePolicy()
         self.root = None
+        self.num_workers = 8
+        self.pool = multiprocessing.Pool(self.num_workers, initializer=init_worker)
+        self.last_move = None
 
     def set_board(self, new_board):
         self.go_board = copy.deepcopy(new_board)
+        self.root = None
 
     def apply_move(self, color, move):
         self.go_board.apply_move(color, move)
@@ -184,7 +163,7 @@ class MCTSBot(object):
 
     def select_move(self, bot_color):
         if self.root is None:
-            self.root = GameNode(self.go_board, bot_color, self.playout_model, self.processor)
+            self.root = GameNode(self.go_board, bot_color, self.model, self.processor)
         start = time.time()
 
         while time.time() - start < self.thinking_time:
@@ -199,13 +178,18 @@ class MCTSBot(object):
             #print "Selected %s" % path(node)
 
             # Simulate a random game from this node.
-            #print "Simulate random game..."
-            winner = self.do_random_playout(node.board, node.next_to_play)
-            #print "Winner was", winner
+            #print "Simulate random game from:"
+            #print to_string(node.board) + "\n"
+            #print "next to play", node.next_to_play
+            args = [(node.board, node.next_to_play, self.komi) for _ in range(self.num_workers)]
+            winners = self.pool.map(unpack_args_do_random_playout, args)
+            #winner = do_random_playout(self.playout_bot, node.board, node.next_to_play, self.komi)
+            #print "Winners", winners
 
             # Propagate scores back up the tree.
             while node is not None:
-                node.record_win(winner)
+                for winner in winners:
+                    node.record_win(winner)
                 node = node.parent
 
         # Select the best move.
@@ -218,55 +202,25 @@ class MCTSBot(object):
         self.root.parent = None
         return self.root.last_move
 
-    def do_random_playout(self, board, next_to_play):
-        board = copy.deepcopy(board)
-        passes = 0
-        while not _game_over(board):
-            if passes >= 2:
-                break
-            X, _ = self.processor.feature_and_label(next_to_play, (0, 0), board, self.num_planes)
-            X = X.reshape((1, X.shape[0], X.shape[1], X.shape[2]))
-            pred = np.squeeze(self.playout_model.predict(X))
-            pred *= pred
-            top_idx = pred.argsort()[-self.top_n:]
-            mask = np.zeros(pred.shape)
-            mask[top_idx] = 1
-            pred *= mask
-            did_move = False
-            num_moves = max(self.top_n, np.count_nonzero(pred))
-            pred /= pred.sum()
-            moves = np.random.choice(19 * 19, size=num_moves, replace=False, p=pred)
-            #s = ' '.join(['(%d, %d @ %.5f)' % (mov // 19, mov % 19, pred[mov]) for mov in moves])
-            for i, move_number in enumerate(moves):
-                row = move_number // 19
-                col = move_number % 19
-                move = (row, col)
-                if board.is_move_legal(next_to_play, move):
-                    board.apply_move(next_to_play, move)
-                    did_move = True
-                    break
-            if not did_move:
-                bp, diag = border_moves(board, next_to_play)
-                random.shuffle(bp)
-                for move in bp:
-                    if board.is_move_legal(next_to_play, move):
-                        board.apply_move(next_to_play, move)
-                        did_move = True
-                        break
-                random.shuffle(diag)
-                for move in diag:
-                    if board.is_move_legal(next_to_play, move):
-                        board.apply_move(next_to_play, move)
-                        did_move = True
-                        break
-            if did_move:
-                passes = 0
-            else:
-                passes += 1
-            next_to_play = _other(next_to_play)
-        status = scoring.evaluate_territory(board)
-        black_area = status.num_black_territory + status.num_black_stones
-        white_area = status.num_white_territory + status.num_white_stones
-        white_score = white_area + self.komi
-        diff = black_area - white_score
-        return 'w' if white_score > black_area else 'b'
+
+def do_random_playout(playout_bot, board, next_to_play, komi):
+    board = copy.deepcopy(board)
+    passes = 0
+    while passes < 2:
+        move = playout_bot.select_move(board, next_to_play)
+        if move is not None:
+            board.apply_move(next_to_play, move)
+            passes = 0
+        else:
+            passes += 1
+        next_to_play = board.other_color(next_to_play)
+    status = scoring.evaluate_territory(board)
+    black_area = status.num_black_territory + status.num_black_stones
+    white_area = status.num_white_territory + status.num_white_stones
+    white_score = white_area + komi
+    return 'w' if white_score > black_area else 'b'
+
+
+def unpack_args_do_random_playout(args):
+    global playout_bot
+    return do_random_playout(playout_bot, *args)

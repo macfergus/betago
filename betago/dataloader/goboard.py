@@ -43,6 +43,12 @@ class GoBoard(object):
         copied.past_states = set(self.past_states)
         return copied
 
+    def empty_points(self):
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if (r, c) not in self.board:
+                    yield (r, c)
+
     def fold_go_strings(self, target, source, join_position):
         ''' Merge two go strings by joining their common moves'''
         if target == source:
@@ -145,6 +151,27 @@ class GoBoard(object):
                         if num_adjacent_enemy_liberties == 1:
                             return True
         return False
+
+    def get_simple_kos(self, play_color):
+        if self.ko_last_move_num_captured != 1:
+            return []
+        kos = []
+        ko_row, ko_col = self.ko_last_move
+        for drow in (-1, 0, 1):
+            test_row = ko_row + drow
+            if test_row < 0:
+                continue
+            if test_row >= self.board_size:
+                continue
+            for dcol in (-1, 0, 1):
+                test_col = ko_col + dcol
+                if test_col < 0:
+                    continue
+                if test_col >= self.board_size:
+                    continue
+                if self.is_simple_ko(play_color, (test_row, test_col)):
+                    kos.append((test_row, test_col))
+        return kos
 
     def check_enemy_liberty(self, play_color, enemy_pos, our_pos):
         '''

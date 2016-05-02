@@ -38,25 +38,34 @@ class SevenPlaneProcessor(GoDataProcessor):
         enemy_color = go_board.other_color(color)
         label = row * 19 + col
         move_array = np.zeros((num_planes, go_board.board_size, go_board.board_size))
-        for row in range(0, go_board.board_size):
-            for col in range(0, go_board.board_size):
-                pos = (row, col)
-                if go_board.board.get(pos) == color:
-                    if go_board.go_strings[pos].liberties.size() == 1:
-                        move_array[0, row, col] = 1
-                    elif go_board.go_strings[pos].liberties.size() == 2:
-                        move_array[1, row, col] = 1
-                    elif go_board.go_strings[pos].liberties.size() >= 3:
-                        move_array[2, row, col] = 1
-                if go_board.board.get(pos) == enemy_color:
-                    if go_board.go_strings[pos].liberties.size() == 1:
-                        move_array[3, row, col] = 1
-                    elif go_board.go_strings[pos].liberties.size() == 2:
-                        move_array[4, row, col] = 1
-                    elif go_board.go_strings[pos].liberties.size() >= 3:
-                        move_array[5, row, col] = 1
-                if go_board.is_simple_ko(color, pos):
-                    move_array[6, row, col] = 1
+        done = set()
+        for _, go_string in go_board.go_strings.items():
+            if id(go_string) in done:
+                continue
+            done.add(id(go_string))
+            num_liberties = go_string.liberties.size()
+            stone_rows, stone_cols = zip(*go_string.stones)
+            if color == go_string.color:
+                if num_liberties == 1:
+                    move_array[0, stone_rows, stone_cols] = 1
+                elif num_liberties == 2:
+                    move_array[1, stone_rows, stone_cols] = 1
+                else:
+                    # Must be 3+; otherwise it would have been
+                    # removed.
+                    move_array[2, stone_rows, stone_cols] = 1
+            else:
+                # Enemy stones.
+                if num_liberties == 1:
+                    move_array[3, stone_rows, stone_cols] = 1
+                elif num_liberties == 2:
+                    move_array[4, stone_rows, stone_cols] = 1
+                else:
+                    # Must be 3+; otherwise it would have been
+                    # removed.
+                    move_array[5, stone_rows, stone_cols] = 1
+        for row, col in go_board.get_simple_kos(color):
+            move_array[6, row, col] = 1
         return move_array, label
 
 
