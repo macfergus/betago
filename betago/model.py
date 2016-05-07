@@ -3,11 +3,12 @@ import random
 from itertools import chain, product
 from multiprocessing import Process
 
+import numpy as np
 from flask import Flask, request, jsonify
 from flask.ext.cors import CORS
-import numpy as np
+
 from . import scoring
-from .dataloader.goboard import GoBoard
+from .gamelogic.goboard import GoBoard
 from .processor import ThreePlaneProcessor
 
 

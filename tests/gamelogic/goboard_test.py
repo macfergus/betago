@@ -1,6 +1,6 @@
 import unittest
 
-from betago.dataloader.goboard import GoBoard, from_string, to_string
+from betago.gamelogic.goboard import GoBoard, from_string, to_string
 
 
 class GoBoardTest(unittest.TestCase):

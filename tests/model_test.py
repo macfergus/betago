@@ -3,7 +3,7 @@ import unittest
 import six
 
 from betago import model
-from betago.dataloader import goboard
+from betago.gamelogic import goboard
 
 
 class ModelTestCase(unittest.TestCase):

@@ -14,7 +14,7 @@ from os import sys
 from keras.utils import np_utils
 
 from .. import gosgf
-from .goboard import GoBoard
+from ..gamelogic.goboard import GoBoard
 from .index_processor import KGSIndex
 from .sampling import Sampler
 

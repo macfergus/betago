@@ -2,7 +2,7 @@ import sys
 
 from . import command, response
 from .board import *
-from ..dataloader.goboard import GoBoard
+from ..gamelogic.goboard import GoBoard
 
 __all__ = [
     'GTPFrontend',

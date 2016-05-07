@@ -1,7 +1,7 @@
 import unittest
 
 from betago import scoring
-from betago.dataloader import goboard
+from betago.gamelogic import goboard
 
 
 class ScoringTestCase(unittest.TestCase):
